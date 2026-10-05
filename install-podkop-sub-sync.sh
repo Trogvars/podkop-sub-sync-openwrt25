@@ -6,11 +6,13 @@ SUB_URL=""
 INTERVAL=""
 EXCLUDES=""
 NO_START=0
+WITH_XHTTP=0
 usage(){ cat <<'EOF'
 Usage: install-podkop-sub-sync.sh [options]
   --url URL        VPN subscription URL
   --interval SEC   Refresh interval in seconds (default 86400)
   --exclude CC     Exclude country; may be repeated (RU, UZ, ...)
+  --with-xhttp     Install/check sing-box-extended + Podkop XHTTP patch and enable XHTTP
   --no-start       Install/enable but do not start now
   -h, --help       Help
 EOF
@@ -20,6 +22,7 @@ while [ "$#" -gt 0 ]; do
     --url) SUB_URL="$2"; shift 2 ;;
     --interval) INTERVAL="$2"; shift 2 ;;
     --exclude) EXCLUDES="${EXCLUDES}${EXCLUDES:+ }$2"; shift 2 ;;
+    --with-xhttp) WITH_XHTTP=1; shift ;;
     --no-start) NO_START=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1"; usage; exit 2 ;;
@@ -38,6 +41,53 @@ if [ -n "$need_packages" ]; then
   apk update
   apk add $need_packages
 fi
+SB_EXT_URL="https://raw.githubusercontent.com/EikeiDev/OpenWRT-sing-box-extended/refs/heads/main/install.sh"
+PODKOP_XHTTP_PATCH_URL="https://raw.githubusercontent.com/moix89/podkop-xhttp-patch/main/install.sh"
+
+fetch_script(){
+  url="$1"; dst="$2"
+  if command -v wget >/dev/null 2>&1; then
+    wget -O "$dst" "$url"
+  else
+    curl -fsSL "$url" -o "$dst"
+  fi
+}
+
+ensure_xhttp_stack(){
+  if ! sing-box version 2>/dev/null | grep -qi extended; then
+    echo "XHTTP: sing-box-extended is required."
+    [ -r /dev/tty ] || {
+      echo "ERROR: sing-box-extended installer is interactive and no TTY is available."
+      echo "Run manually: wget -O /tmp/sb-ext.sh $SB_EXT_URL && sh /tmp/sb-ext.sh"
+      exit 1
+    }
+    fetch_script "$SB_EXT_URL" /tmp/sb-ext.sh
+    chmod 700 /tmp/sb-ext.sh
+    echo "Starting interactive sing-box-extended installer..."
+    sh /tmp/sb-ext.sh </dev/tty >/dev/tty 2>&1
+  fi
+
+  sing-box version 2>/dev/null | grep -qi extended || {
+    echo "ERROR: sing-box-extended is still not active."
+    exit 1
+  }
+
+  if ! grep -q '^[[:space:]]*xhttp)' /usr/lib/podkop/sing_box_config_facade.sh; then
+    echo "XHTTP: installing Podkop XHTTP patch..."
+    fetch_script "$PODKOP_XHTTP_PATCH_URL" /tmp/podkop-xhttp-patch.sh
+    chmod 700 /tmp/podkop-xhttp-patch.sh
+    sh /tmp/podkop-xhttp-patch.sh
+  fi
+
+  grep -q '^[[:space:]]*xhttp)' /usr/lib/podkop/sing_box_config_facade.sh || {
+    echo "ERROR: Podkop XHTTP parser patch was not detected after installation."
+    exit 1
+  }
+
+  echo "XHTTP prerequisites OK:"
+  sing-box version | head -n 1
+  echo "Podkop XHTTP parser: enabled"
+}
 
 mkdir -p "$BACKUP_DIR"
 backup_if_exists(){
@@ -178,6 +228,18 @@ for c in curl uci base64 sha256sum sing-box grep sed sort gzip awk tr; do need "
 ENABLED="$(uci -q get ${CFG}.${SEC}.enabled||echo 0)"; [ "$ENABLED" = 1 ] || { log "Sync disabled"; exit 0; }
 URL="$(uci -q get ${CFG}.${SEC}.url||true)"; TARGET="$(uci -q get ${CFG}.${SEC}.target||echo main)"; UA="$(uci -q get ${CFG}.${SEC}.user_agent||echo podkop-sub-sync/1.2)"; SEND_HWID="$(uci -q get ${CFG}.${SEC}.send_hwid||echo 0)"; HWID="$(uci -q get ${CFG}.${SEC}.hwid||true)"; ALLOW_XHTTP="$(uci -q get ${CFG}.${SEC}.allow_xhttp||echo 0)"
 ENABLE_VLESS="$(uci -q get ${CFG}.${SEC}.enable_vless||echo 1)"; ENABLE_TROJAN="$(uci -q get ${CFG}.${SEC}.enable_trojan||echo 1)"; ENABLE_SS="$(uci -q get ${CFG}.${SEC}.enable_ss||echo 1)"; EXCLUDE_COUNTRIES="$(uci -q get ${CFG}.${SEC}.exclude_country||true)"
+if [ "$ALLOW_XHTTP" = 1 ]; then
+  if ! sing-box version 2>/dev/null | grep -qi extended; then
+    log "ERROR: XHTTP enabled but sing-box-extended is not installed"
+    log "Install: wget -O /tmp/sb-ext.sh https://raw.githubusercontent.com/EikeiDev/OpenWRT-sing-box-extended/refs/heads/main/install.sh && sh /tmp/sb-ext.sh"
+    exit 4
+  fi
+  if ! grep -q '^[[:space:]]*xhttp)' /usr/lib/podkop/sing_box_config_facade.sh; then
+    log "ERROR: XHTTP enabled but Podkop parser has no XHTTP support"
+    log "Install: wget -O /tmp/patch.sh https://raw.githubusercontent.com/moix89/podkop-xhttp-patch/main/install.sh && sh /tmp/patch.sh"
+    exit 4
+  fi
+fi
 [ -n "$URL" ] || { log "ERROR: subscription URL empty"; exit 2; }; uci -q get "podkop.${TARGET}" >/dev/null 2>&1 || { log "ERROR: podkop section $TARGET missing"; exit 2; }
 PROTO_RE=""; [ "$ENABLE_VLESS" = 1 ] && PROTO_RE=vless; [ "$ENABLE_TROJAN" = 1 ] && { [ -n "$PROTO_RE" ] && PROTO_RE="$PROTO_RE|trojan" || PROTO_RE=trojan; }; [ "$ENABLE_SS" = 1 ] && { [ -n "$PROTO_RE" ] && PROTO_RE="$PROTO_RE|ss" || PROTO_RE=ss; }; [ -n "$PROTO_RE" ] || { log "ERROR: all protocols disabled"; exit 2; }
 log "Enabled protocols: $PROTO_RE"
@@ -274,7 +336,12 @@ fi
 [ -n "$SUB_URL" ] && uci set podkop-sub-sync.main.url="$SUB_URL"
 if [ -n "$INTERVAL" ]; then case "$INTERVAL" in ''|*[!0-9]*) echo "ERROR: interval must be seconds"; exit 2;; esac; uci set podkop-sub-sync.main.interval="$INTERVAL"; fi
 if [ -n "$EXCLUDES" ]; then uci -q delete podkop-sub-sync.main.exclude_country || true; for cc in $EXCLUDES; do cc="$(echo "$cc"|tr '[:lower:]' '[:upper:]')"; case "$cc" in [A-Z][A-Z]) ;; *) echo "ERROR: invalid country $cc"; exit 2;; esac; uci add_list podkop-sub-sync.main.exclude_country="$cc"; done; fi
+[ "$WITH_XHTTP" = 1 ] && uci set podkop-sub-sync.main.allow_xhttp='1'
 uci commit podkop-sub-sync
+
+if [ "$(uci -q get podkop-sub-sync.main.allow_xhttp || echo 0)" = 1 ]; then
+  ensure_xhttp_stack
+fi
 
 for f in /usr/bin/podkop-sub-sync /usr/bin/podkop-sub-precheck /usr/bin/podkop-sub-sync-daemon /etc/init.d/podkop-sub-sync; do /bin/ash -n "$f" || { echo "ERROR: syntax error in $f"; exit 1; }; done
 
