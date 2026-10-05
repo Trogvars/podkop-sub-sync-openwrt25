@@ -202,7 +202,7 @@ wget -O /tmp/sb-ext.sh https://raw.githubusercontent.com/EikeiDev/OpenWRT-sing-b
 sh /tmp/sb-ext.sh
 ```
 
-На OpenWrt 25.x установщик `sing-box-extended` умеет работать через `apk` и предлагает пакетную установку `.apk` либо compressed-вариант.
+На OpenWrt 25.x внешний installer `sing-box-extended` умеет работать через `apk`. В `podkop-sub-sync` 1.3.2 выбор автоматизирован: берётся последний стабильный релиз и рекомендуемый для конкретного роутера формат.
 
 2. **XHTTP patch для Podkop**
 
@@ -222,6 +222,27 @@ sing-box version
 grep -n 'xhttp)' /usr/lib/podkop/sing_box_config_facade.sh
 ```
 
+### Автоматическое восстановление XHTTP-зависимостей
+
+Начиная с версии **1.3.2**, если в конфиге установлено:
+
+```text
+option allow_xhttp '1'
+```
+
+то и installer, и `/usr/bin/podkop-sub-sync` сами проверяют необходимые компоненты.
+
+Если `sing-box-extended` отсутствует, автоматически:
+
+1. скачивается installer `EikeiDev/OpenWRT-sing-box-extended`;
+2. выбирается **первый стабильный релиз** (последний стабильный в списке);
+3. выбирается **рекомендуемый installer-ом формат** для конкретного роутера;
+4. после установки повторно проверяется `sing-box version`.
+
+Если Podkop не содержит обработчик `xhttp)`, автоматически скачивается и применяется `moix89/podkop-xhttp-patch`.
+
+Ручной ввод и TTY для этой процедуры больше не требуются.
+
 Для автоматической установки/проверки XHTTP-стека используйте:
 
 ```text
@@ -239,7 +260,7 @@ wget -qO- https://raw.githubusercontent.com/Trogvars/podkop-sub-sync-openwrt25/m
       --with-xhttp
 ```
 
-При `allow_xhttp=1` updater заранее проверяет наличие `sing-box-extended` и XHTTP-парсера Podkop. Если одного из компонентов нет, синхронизация останавливается **до скачивания подписки** с понятной ошибкой.
+При `allow_xhttp=1` updater автоматически восстанавливает XHTTP-зависимости **до скачивания подписки**: при отсутствии ставит `sing-box-extended`, затем при необходимости применяет Podkop XHTTP patch и только после успешной проверки продолжает синхронизацию.
 ## Установка
 
 ### Bootstrap `install.sh`
@@ -325,7 +346,7 @@ config sync 'main'
         option interval '86400'
         option retry_interval '900'
 
-        option user_agent 'podkop-sub-sync/1.3'
+        option user_agent 'podkop-sub-sync/1.3.2'
         option send_hwid '0'
         option allow_xhttp '0'
 
