@@ -4,6 +4,7 @@ APP="podkop-sub-sync"
 BACKUP_DIR="/root/${APP}-backup-$(date +%Y%m%d-%H%M%S)"
 SUB_URL=""
 INTERVAL=""
+INCLUDES=""
 EXCLUDES=""
 NO_START=0
 WITH_XHTTP=0
@@ -11,6 +12,7 @@ usage(){ cat <<'EOF'
 Usage: install-podkop-sub-sync.sh [options]
   --url URL        VPN subscription URL
   --interval SEC   Refresh interval in seconds (default 86400)
+  --include CC     Keep only this country; may be repeated (RU, KZ, ...)
   --exclude CC     Exclude country; may be repeated (RU, UZ, ...)
   --with-xhttp     Install/check sing-box-extended + Podkop XHTTP patch and enable XHTTP
   --no-start       Install/enable but do not start now
@@ -21,6 +23,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --url) SUB_URL="$2"; shift 2 ;;
     --interval) INTERVAL="$2"; shift 2 ;;
+    --include) INCLUDES="${INCLUDES}${INCLUDES:+ }$2"; shift 2 ;;
     --exclude) EXCLUDES="${EXCLUDES}${EXCLUDES:+ }$2"; shift 2 ;;
     --with-xhttp) WITH_XHTTP=1; shift ;;
     --no-start) NO_START=1; shift ;;
@@ -227,7 +230,7 @@ count_protocol(){ grep -c "^$1://" "$2" 2>/dev/null || true; }
 for c in curl uci base64 sha256sum sing-box grep sed sort gzip awk tr; do need "$c"; done
 ENABLED="$(uci -q get ${CFG}.${SEC}.enabled||echo 0)"; [ "$ENABLED" = 1 ] || { log "Sync disabled"; exit 0; }
 URL="$(uci -q get ${CFG}.${SEC}.url||true)"; TARGET="$(uci -q get ${CFG}.${SEC}.target||echo main)"; UA="$(uci -q get ${CFG}.${SEC}.user_agent||echo podkop-sub-sync/1.2)"; SEND_HWID="$(uci -q get ${CFG}.${SEC}.send_hwid||echo 0)"; HWID="$(uci -q get ${CFG}.${SEC}.hwid||true)"; ALLOW_XHTTP="$(uci -q get ${CFG}.${SEC}.allow_xhttp||echo 0)"
-ENABLE_VLESS="$(uci -q get ${CFG}.${SEC}.enable_vless||echo 1)"; ENABLE_TROJAN="$(uci -q get ${CFG}.${SEC}.enable_trojan||echo 1)"; ENABLE_SS="$(uci -q get ${CFG}.${SEC}.enable_ss||echo 1)"; EXCLUDE_COUNTRIES="$(uci -q get ${CFG}.${SEC}.exclude_country||true)"
+ENABLE_VLESS="$(uci -q get ${CFG}.${SEC}.enable_vless||echo 1)"; ENABLE_TROJAN="$(uci -q get ${CFG}.${SEC}.enable_trojan||echo 1)"; ENABLE_SS="$(uci -q get ${CFG}.${SEC}.enable_ss||echo 1)"; INCLUDE_COUNTRIES="$(uci -q get ${CFG}.${SEC}.include_country||true)"; EXCLUDE_COUNTRIES="$(uci -q get ${CFG}.${SEC}.exclude_country||true)"
 if [ "$ALLOW_XHTTP" = 1 ]; then
   if ! sing-box version 2>/dev/null | grep -qi extended; then
     log "ERROR: XHTTP enabled but sing-box-extended is not installed"
@@ -250,7 +253,28 @@ PAYLOAD="$TMP/payload"; if gzip -t "$RAW" >/dev/null 2>&1; then gzip -dc "$RAW" 
 TEXT="$PAYLOAD"; if ! grep -Eq '(vless|trojan|ss)://' "$PAYLOAD"; then log "Trying base64 decode"; COMPACT="$TMP/base64"; DECODED="$TMP/decoded"; tr -d '\r\n\t ' <"$PAYLOAD" >"$COMPACT"; base64 -d "$COMPACT" >"$DECODED" 2>/dev/null || { log "ERROR: unknown subscription format"; exit 4; }; if gzip -t "$DECODED" >/dev/null 2>&1; then TEXT="$TMP/decoded-gzip"; gzip -dc "$DECODED" >"$TEXT" || exit 4; else TEXT="$DECODED"; fi; fi
 LIST="$TMP/proxies.list"; grep -Eo "(${PROTO_RE})://[^[:space:]]+" "$TEXT"|sed 's/\r$//'|sort -u >"$LIST"; COUNT="$(wc -l <"$LIST"|tr -d ' ')"; [ "$COUNT" -gt 0 ] || exit 4; log "Found $COUNT proxies after protocol filter"
 XHTTP="$(grep -Ec '([?&])type=xhttp([&#]|$)' "$LIST" 2>/dev/null||true)"; if [ "$XHTTP" -gt 0 ] && [ "$ALLOW_XHTTP" != 1 ]; then log "Found $XHTTP XHTTP proxies; filtering them"; F="$TMP/xhttp.filtered"; grep -Eiv '([?&])type=xhttp([&#]|$)' "$LIST" >"$F"||true; mv "$F" "$LIST"; fi
+if [ -n "$INCLUDE_COUNTRIES" ]; then
+  BEFORE="$(wc -l <"$LIST"|tr -d ' ')"
+  INCLUDED="$TMP/country-included.list"
+  : >"$INCLUDED"
+  VALID_INCLUDE=0
+  for COUNTRY in $INCLUDE_COUNTRIES; do
+    COUNTRY="$(echo "$COUNTRY"|tr '[:lower:]' '[:upper:]')"
+    FLAG="$(country_flag_encoded "$COUNTRY")" || { log "WARN: invalid include country code: $COUNTRY"; continue; }
+    VALID_INCLUDE=$((VALID_INCLUDE+1))
+    MATCHES="$(grep -icF "$FLAG" "$LIST" 2>/dev/null||true)"
+    log "Country $COUNTRY included: $MATCHES proxies"
+    grep -iF "$FLAG" "$LIST" >>"$INCLUDED" 2>/dev/null || true
+  done
+  [ "$VALID_INCLUDE" -gt 0 ] || { log "ERROR: include_country contains no valid country codes"; exit 4; }
+  sort -u "$INCLUDED" >"$TMP/country-included.sorted"
+  mv "$TMP/country-included.sorted" "$LIST"
+  AFTER="$(wc -l <"$LIST"|tr -d ' ')"
+  log "Country include filter: $BEFORE -> $AFTER proxies"
+  [ "$AFTER" -gt 0 ] || { log "ERROR: include_country filter removed all proxies"; exit 4; }
+fi
 for COUNTRY in $EXCLUDE_COUNTRIES; do COUNTRY="$(echo "$COUNTRY"|tr '[:lower:]' '[:upper:]')"; FLAG="$(country_flag_encoded "$COUNTRY")" || continue; BEFORE="$(wc -l <"$LIST"|tr -d ' ')"; F="$TMP/country-${COUNTRY}.filtered"; grep -viF "$FLAG" "$LIST" >"$F"||true; mv "$F" "$LIST"; AFTER="$(wc -l <"$LIST"|tr -d ' ')"; log "Country $COUNTRY excluded: $((BEFORE-AFTER)) proxies"; done
+AFTER_COUNTRY="$(wc -l <"$LIST"|tr -d ' ')"; [ "$AFTER_COUNTRY" -gt 0 ] || { log "ERROR: country filters removed all proxies"; exit 4; }
 PRECHECK_ENABLED="$(uci -q get ${CFG}.${SEC}.precheck_enabled||echo 0)"; if [ "$PRECHECK_ENABLED" = 1 ]; then log "Running real proxy availability precheck..."; PRECHECKED="$TMP/proxies.prechecked"; /usr/bin/podkop-sub-precheck "$LIST" "$PRECHECKED"; RC=$?; [ "$RC" -eq 0 ] || { log "ERROR: proxy precheck failed (code $RC); current config unchanged"; exit 4; }; [ -s "$PRECHECKED" ] || exit 4; mv "$PRECHECKED" "$LIST"; log "Precheck accepted $(wc -l <"$LIST"|tr -d ' ') working proxies"; fi
 COUNT="$(wc -l <"$LIST"|tr -d ' ')"; [ "$COUNT" -gt 0 ] || exit 4; log "Final proxy list:"; log "  VLESS : $(count_protocol vless "$LIST")"; log "  Trojan: $(count_protocol trojan "$LIST")"; log "  SS    : $(count_protocol ss "$LIST")"; log "  Total : $COUNT"
 HASH="$(sha256sum "$LIST"|awk '{print $1}')"; STATE="${STATE_DIR}/podkop-sub-sync-${TARGET}.sha256"; if [ -r "$STATE" ] && [ "$HASH" = "$(cat "$STATE")" ]; then log "Working proxy list unchanged ($COUNT proxies)"; exit 0; fi; log "Working proxy list changed: $COUNT proxies"
@@ -318,6 +342,8 @@ config sync 'main'
         option enable_vless '1'
         option enable_trojan '1'
         option enable_ss '1'
+        # list include_country 'RU'
+        # list exclude_country 'RU'
         option precheck_enabled '1'
         option precheck_url 'https://www.gstatic.com/generate_204'
         option precheck_http_code '204'
@@ -335,6 +361,7 @@ fi
 
 [ -n "$SUB_URL" ] && uci set podkop-sub-sync.main.url="$SUB_URL"
 if [ -n "$INTERVAL" ]; then case "$INTERVAL" in ''|*[!0-9]*) echo "ERROR: interval must be seconds"; exit 2;; esac; uci set podkop-sub-sync.main.interval="$INTERVAL"; fi
+if [ -n "$INCLUDES" ]; then uci -q delete podkop-sub-sync.main.include_country || true; for cc in $INCLUDES; do cc="$(echo "$cc"|tr '[:lower:]' '[:upper:]')"; case "$cc" in [A-Z][A-Z]) ;; *) echo "ERROR: invalid include country $cc"; exit 2;; esac; uci add_list podkop-sub-sync.main.include_country="$cc"; done; fi
 if [ -n "$EXCLUDES" ]; then uci -q delete podkop-sub-sync.main.exclude_country || true; for cc in $EXCLUDES; do cc="$(echo "$cc"|tr '[:lower:]' '[:upper:]')"; case "$cc" in [A-Z][A-Z]) ;; *) echo "ERROR: invalid country $cc"; exit 2;; esac; uci add_list podkop-sub-sync.main.exclude_country="$cc"; done; fi
 [ "$WITH_XHTTP" = 1 ] && uci set podkop-sub-sync.main.allow_xhttp='1'
 uci commit podkop-sub-sync
