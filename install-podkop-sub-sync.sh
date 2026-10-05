@@ -4,6 +4,7 @@ APP="podkop-sub-sync"
 BACKUP_DIR="/root/${APP}-backup-$(date +%Y%m%d-%H%M%S)"
 SUB_URL=""
 INTERVAL=""
+MAX_NODES=""
 INCLUDES=""
 EXCLUDES=""
 NO_START=0
@@ -12,6 +13,7 @@ usage(){ cat <<'EOF'
 Usage: install-podkop-sub-sync.sh [options]
   --url URL        VPN subscription URL
   --interval SEC   Refresh interval in seconds (default 86400)
+  --max-nodes N    Keep only N fastest working nodes after precheck (0 = unlimited)
   --include CC     Keep only this country; may be repeated (RU, KZ, ...)
   --exclude CC     Exclude country; may be repeated (RU, UZ, ...)
   --with-xhttp     Install/check sing-box-extended + Podkop XHTTP patch and enable XHTTP
@@ -23,6 +25,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --url) SUB_URL="$2"; shift 2 ;;
     --interval) INTERVAL="$2"; shift 2 ;;
+    --max-nodes) MAX_NODES="$2"; shift 2 ;;
     --include) INCLUDES="${INCLUDES}${INCLUDES:+ }$2"; shift 2 ;;
     --exclude) EXCLUDES="${EXCLUDES}${EXCLUDES:+ }$2"; shift 2 ;;
     --with-xhttp) WITH_XHTTP=1; shift ;;
@@ -120,6 +123,9 @@ die(){ log "ERROR: $*"; exit 1; }
 command -v jq >/dev/null 2>&1 || die "jq not installed"
 command -v sing-box >/dev/null 2>&1 || die "sing-box not installed"
 command -v curl >/dev/null 2>&1 || die "curl not installed"
+command -v sort >/dev/null 2>&1 || die "sort not installed"
+command -v head >/dev/null 2>&1 || die "head not installed"
+command -v cut >/dev/null 2>&1 || die "cut not installed"
 . /usr/lib/podkop/sing_box_config_facade.sh
 TEST_URL="$(uci -q get "${CFG}.${SEC}.precheck_url" || echo 'https://www.gstatic.com/generate_204')"
 EXPECTED_CODE="$(uci -q get "${CFG}.${SEC}.precheck_http_code" || echo '204')"
@@ -129,6 +135,8 @@ BATCH_SIZE="$(uci -q get "${CFG}.${SEC}.precheck_batch_size" || echo '6')"
 BASE_PORT="$(uci -q get "${CFG}.${SEC}.precheck_base_port" || echo '39000')"
 MIN_NODES="$(uci -q get "${CFG}.${SEC}.precheck_min_nodes" || echo '3')"
 MIN_PERCENT="$(uci -q get "${CFG}.${SEC}.precheck_min_percent" || echo '20')"
+MAX_NODES="$(uci -q get "${CFG}.${SEC}.precheck_max_nodes" || echo '0')"
+case "$MAX_NODES" in ''|*[!0-9]*) die "precheck_max_nodes must be an integer >= 0";; esac
 DNS_SERVER="$(uci -q get "${CFG}.${SEC}.precheck_dns_server" || uci -q get podkop.settings.bootstrap_dns_server || echo '1.1.1.1')"
 OUTBOUND_MARK=2097152
 http_code_ok(){
@@ -154,6 +162,8 @@ stop_test_singbox(){
 }
 TMP="$(mktemp -d /tmp/podkop-precheck.XXXXXX)" || die "cannot create temp dir"
 TEST_PID=""
+RANKED="$TMP/working-ranked.tsv"
+: >"$RANKED"
 cleanup(){ stop_test_singbox; rm -rf "$TMP"; }
 trap cleanup EXIT INT TERM
 log "Checking test URL: $TEST_URL"
@@ -169,6 +179,7 @@ log "Candidates : $TOTAL"
 log "Batch size : $BATCH_SIZE"
 log "Timeout    : ${TIMEOUT}s"
 log "Expected   : HTTP $EXPECTED_CODE"
+if [ "$MAX_NODES" -gt 0 ]; then log "Keep fastest: $MAX_NODES"; else log "Keep fastest: unlimited"; fi
 log ""
 while [ "$START" -le "$TOTAL" ]; do
   END=$((START+BATCH_SIZE-1)); [ "$END" -gt "$TOTAL" ] && END="$TOTAL"
@@ -206,7 +217,7 @@ while [ "$START" -le "$TOTAL" ]; do
     RESULT="$(curl -k -sS -x "http://127.0.0.1:${PORT}" --connect-timeout "$CONNECT_TIMEOUT" --max-time "$TIMEOUT" -o /dev/null -w '%{http_code} %{time_total}' "$TEST_URL" 2>/dev/null)"; CURL_RC=$?
     CODE="$(echo "$RESULT" | awk '{print $1}')"; TIME="$(echo "$RESULT" | awk '{print $2}')"; [ -n "$CODE" ] || CODE="000"
     if [ "$CURL_RC" -eq 0 ] && http_code_ok "$CODE"; then
-      MS="$(awk -v t="${TIME:-0}" 'BEGIN{printf "%.0f",t*1000}')"; printf '%s\n' "$LINK" >>"$OUTPUT"; GOOD=$((GOOD+1)); log "[$INDEX/$TOTAL] OK   ${MS}ms  $NAME"
+      MS="$(awk -v t="${TIME:-0}" 'BEGIN{printf "%.0f",t*1000}')"; printf '%s\t%s\n' "$MS" "$LINK" >>"$RANKED"; GOOD=$((GOOD+1)); log "[$INDEX/$TOTAL] OK   ${MS}ms  $NAME"
     else
       BAD=$((BAD+1)); log "[$INDEX/$TOTAL] FAIL HTTP=${CODE} rc=${CURL_RC}  $NAME"
     fi
@@ -214,9 +225,19 @@ while [ "$START" -le "$TOTAL" ]; do
   stop_test_singbox; START=$((END+1))
 done
 PERCENT=$((GOOD*100/TOTAL)); REQUIRED_NODES="$MIN_NODES"; [ "$TOTAL" -lt "$REQUIRED_NODES" ] && REQUIRED_NODES="$TOTAL"
-log ""; log "========================================"; log "Proxy precheck finished"; log "Total       : $TOTAL"; log "Working     : $GOOD"; log "Failed      : $BAD"; log "Parser fail : $PARSER_BAD"; log "Success     : ${PERCENT}%"; log "========================================"
 [ "$GOOD" -ge "$REQUIRED_NODES" ] || { log "ERROR: only $GOOD nodes passed; minimum $REQUIRED_NODES"; exit 20; }
 [ "$PERCENT" -ge "$MIN_PERCENT" ] || { log "ERROR: only ${PERCENT}% passed; minimum ${MIN_PERCENT}%"; exit 21; }
+
+SELECTED="$GOOD"
+if [ "$MAX_NODES" -gt 0 ] && [ "$GOOD" -gt "$MAX_NODES" ]; then SELECTED="$MAX_NODES"; fi
+SORTED_RANKED="$TMP/working-ranked.sorted"
+sort -n "$RANKED" >"$SORTED_RANKED"
+FASTEST_MS="$(awk 'NR==1{print $1; exit}' "$SORTED_RANKED")"
+SLOWEST_SELECTED_MS="$(awk -v n="$SELECTED" 'NR==n{print $1; exit}' "$SORTED_RANKED")"
+head -n "$SELECTED" "$SORTED_RANKED" | cut -f2- | sort -u >"$OUTPUT"
+ACTUAL_SELECTED="$(wc -l <"$OUTPUT" | tr -d ' ')"
+
+log ""; log "========================================"; log "Proxy precheck finished"; log "Total       : $TOTAL"; log "Working     : $GOOD"; log "Failed      : $BAD"; log "Parser fail : $PARSER_BAD"; log "Success     : ${PERCENT}%"; log "Selected    : $ACTUAL_SELECTED"; [ -n "$FASTEST_MS" ] && log "Fastest     : ${FASTEST_MS}ms"; [ -n "$SLOWEST_SELECTED_MS" ] && log "Cutoff      : ${SLOWEST_SELECTED_MS}ms"; log "========================================"
 exit 0
 PRECHECK
 
@@ -229,7 +250,7 @@ country_flag_encoded(){ CODE="$(echo "$1"|tr '[:lower:]' '[:upper:]')"; [ "${#CO
 count_protocol(){ grep -c "^$1://" "$2" 2>/dev/null || true; }
 for c in curl uci base64 sha256sum sing-box grep sed sort gzip awk tr; do need "$c"; done
 ENABLED="$(uci -q get ${CFG}.${SEC}.enabled||echo 0)"; [ "$ENABLED" = 1 ] || { log "Sync disabled"; exit 0; }
-URL="$(uci -q get ${CFG}.${SEC}.url||true)"; TARGET="$(uci -q get ${CFG}.${SEC}.target||echo main)"; UA="$(uci -q get ${CFG}.${SEC}.user_agent||echo podkop-sub-sync/1.2)"; SEND_HWID="$(uci -q get ${CFG}.${SEC}.send_hwid||echo 0)"; HWID="$(uci -q get ${CFG}.${SEC}.hwid||true)"; ALLOW_XHTTP="$(uci -q get ${CFG}.${SEC}.allow_xhttp||echo 0)"
+URL="$(uci -q get ${CFG}.${SEC}.url||true)"; TARGET="$(uci -q get ${CFG}.${SEC}.target||echo main)"; UA="$(uci -q get ${CFG}.${SEC}.user_agent||echo podkop-sub-sync/1.3)"; SEND_HWID="$(uci -q get ${CFG}.${SEC}.send_hwid||echo 0)"; HWID="$(uci -q get ${CFG}.${SEC}.hwid||true)"; ALLOW_XHTTP="$(uci -q get ${CFG}.${SEC}.allow_xhttp||echo 0)"
 ENABLE_VLESS="$(uci -q get ${CFG}.${SEC}.enable_vless||echo 1)"; ENABLE_TROJAN="$(uci -q get ${CFG}.${SEC}.enable_trojan||echo 1)"; ENABLE_SS="$(uci -q get ${CFG}.${SEC}.enable_ss||echo 1)"; INCLUDE_COUNTRIES="$(uci -q get ${CFG}.${SEC}.include_country||true)"; EXCLUDE_COUNTRIES="$(uci -q get ${CFG}.${SEC}.exclude_country||true)"
 if [ "$ALLOW_XHTTP" = 1 ]; then
   if ! sing-box version 2>/dev/null | grep -qi extended; then
@@ -275,7 +296,7 @@ if [ -n "$INCLUDE_COUNTRIES" ]; then
 fi
 for COUNTRY in $EXCLUDE_COUNTRIES; do COUNTRY="$(echo "$COUNTRY"|tr '[:lower:]' '[:upper:]')"; FLAG="$(country_flag_encoded "$COUNTRY")" || continue; BEFORE="$(wc -l <"$LIST"|tr -d ' ')"; F="$TMP/country-${COUNTRY}.filtered"; grep -viF "$FLAG" "$LIST" >"$F"||true; mv "$F" "$LIST"; AFTER="$(wc -l <"$LIST"|tr -d ' ')"; log "Country $COUNTRY excluded: $((BEFORE-AFTER)) proxies"; done
 AFTER_COUNTRY="$(wc -l <"$LIST"|tr -d ' ')"; [ "$AFTER_COUNTRY" -gt 0 ] || { log "ERROR: country filters removed all proxies"; exit 4; }
-PRECHECK_ENABLED="$(uci -q get ${CFG}.${SEC}.precheck_enabled||echo 0)"; if [ "$PRECHECK_ENABLED" = 1 ]; then log "Running real proxy availability precheck..."; PRECHECKED="$TMP/proxies.prechecked"; /usr/bin/podkop-sub-precheck "$LIST" "$PRECHECKED"; RC=$?; [ "$RC" -eq 0 ] || { log "ERROR: proxy precheck failed (code $RC); current config unchanged"; exit 4; }; [ -s "$PRECHECKED" ] || exit 4; mv "$PRECHECKED" "$LIST"; log "Precheck accepted $(wc -l <"$LIST"|tr -d ' ') working proxies"; fi
+PRECHECK_ENABLED="$(uci -q get ${CFG}.${SEC}.precheck_enabled||echo 0)"; if [ "$PRECHECK_ENABLED" = 1 ]; then log "Running real proxy availability precheck..."; PRECHECKED="$TMP/proxies.prechecked"; /usr/bin/podkop-sub-precheck "$LIST" "$PRECHECKED"; RC=$?; [ "$RC" -eq 0 ] || { log "ERROR: proxy precheck failed (code $RC); current config unchanged"; exit 4; }; [ -s "$PRECHECKED" ] || exit 4; mv "$PRECHECKED" "$LIST"; log "Precheck selected $(wc -l <"$LIST"|tr -d ' ') fastest working proxies"; fi
 COUNT="$(wc -l <"$LIST"|tr -d ' ')"; [ "$COUNT" -gt 0 ] || exit 4; log "Final proxy list:"; log "  VLESS : $(count_protocol vless "$LIST")"; log "  Trojan: $(count_protocol trojan "$LIST")"; log "  SS    : $(count_protocol ss "$LIST")"; log "  Total : $COUNT"
 HASH="$(sha256sum "$LIST"|awk '{print $1}')"; STATE="${STATE_DIR}/podkop-sub-sync-${TARGET}.sha256"; if [ -r "$STATE" ] && [ "$HASH" = "$(cat "$STATE")" ]; then log "Working proxy list unchanged ($COUNT proxies)"; exit 0; fi; log "Working proxy list changed: $COUNT proxies"
 BACKUP="$TMP/podkop.backup"; cp /etc/config/podkop "$BACKUP" || exit 5; rollback(){ log "ERROR: new config failed; restoring backup"; cp "$BACKUP" /etc/config/podkop; /etc/init.d/podkop restart >/dev/null 2>&1; exit 5; }
@@ -353,6 +374,7 @@ config sync 'main'
         option precheck_base_port '39000'
         option precheck_min_nodes '3'
         option precheck_min_percent '20'
+        option precheck_max_nodes '20'
 CONF
 else
   echo "Preserving existing /etc/config/podkop-sub-sync"
@@ -361,6 +383,7 @@ fi
 
 [ -n "$SUB_URL" ] && uci set podkop-sub-sync.main.url="$SUB_URL"
 if [ -n "$INTERVAL" ]; then case "$INTERVAL" in ''|*[!0-9]*) echo "ERROR: interval must be seconds"; exit 2;; esac; uci set podkop-sub-sync.main.interval="$INTERVAL"; fi
+if [ -n "$MAX_NODES" ]; then case "$MAX_NODES" in ''|*[!0-9]*) echo "ERROR: max-nodes must be an integer >= 0"; exit 2;; esac; uci set podkop-sub-sync.main.precheck_max_nodes="$MAX_NODES"; fi
 if [ -n "$INCLUDES" ]; then uci -q delete podkop-sub-sync.main.include_country || true; for cc in $INCLUDES; do cc="$(echo "$cc"|tr '[:lower:]' '[:upper:]')"; case "$cc" in [A-Z][A-Z]) ;; *) echo "ERROR: invalid include country $cc"; exit 2;; esac; uci add_list podkop-sub-sync.main.include_country="$cc"; done; fi
 if [ -n "$EXCLUDES" ]; then uci -q delete podkop-sub-sync.main.exclude_country || true; for cc in $EXCLUDES; do cc="$(echo "$cc"|tr '[:lower:]' '[:upper:]')"; case "$cc" in [A-Z][A-Z]) ;; *) echo "ERROR: invalid country $cc"; exit 2;; esac; uci add_list podkop-sub-sync.main.exclude_country="$cc"; done; fi
 [ "$WITH_XHTTP" = 1 ] && uci set podkop-sub-sync.main.allow_xhttp='1'
