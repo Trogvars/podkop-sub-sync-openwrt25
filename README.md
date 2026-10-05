@@ -20,7 +20,7 @@
    - Shadowsocks.
 4. Отбрасывает протоколы, которые отключены в настройках.
 5. При необходимости исключает XHTTP-ссылки.
-6. Исключает серверы выбранных стран по флагу в имени ноды.
+6. Применяет фильтрацию стран: whitelist через `include_country` и blacklist через `exclude_country`.
 7. Реально проверяет каждую оставшуюся ноду через временный экземпляр sing-box.
 8. Оставляет только рабочие серверы.
 9. Вычисляет SHA256 итогового списка.
@@ -53,7 +53,7 @@ Protocol filtering
 XHTTP filtering
        |
        v
-Country filtering
+Country include/exclude filtering
        |
        v
 Real proxy precheck
@@ -93,7 +93,7 @@ Success
 - декодирование Base64/gzip;
 - фильтрацию протоколов;
 - исключение XHTTP;
-- исключение стран;
+- whitelist/blacklist фильтрацию стран;
 - запуск proxy precheck;
 - обновление UCI-конфигурации Podkop;
 - проверку sing-box;
@@ -283,7 +283,11 @@ config sync 'main'
         option enable_trojan '1'
         option enable_ss '1'
 
-        list exclude_country 'RU'
+        # whitelist: оставить только указанные страны
+        # list include_country 'RU'
+
+        # blacklist: исключить указанные страны
+        # list exclude_country 'RU'
 
         option precheck_enabled '1'
         option precheck_url 'https://www.gstatic.com/generate_204'
@@ -367,17 +371,63 @@ option allow_xhttp '0'
 
 `1` — разрешаются. При этом обязательны `sing-box-extended` и XHTTP-патч Podkop.
 
-### Исключение стран
+### Фильтрация стран: `include_country` и `exclude_country`
 
-Например:
+`include_country` работает как **whitelist**. Если указан хотя бы один `include_country`, в список попадут только ноды с флагами этих стран.
+
+Например, оставить только российские серверы:
+
+```text
+list include_country 'RU'
+```
+
+Это удобно для отдельного Podkop-конфига, который должен направлять выбранный трафик только через РФ.
+
+Можно включить несколько стран:
+
+```text
+list include_country 'RU'
+list include_country 'KZ'
+```
+
+В таком случае останутся RU **или** KZ.
+
+`exclude_country` работает как blacklist:
 
 ```text
 list exclude_country 'RU'
 list exclude_country 'UZ'
 ```
 
-Фильтрация выполняется по emoji-флагу страны в fragment/name VPN-ссылки.
+Порядок фильтрации:
 
+```text
+protocols -> XHTTP -> include_country -> exclude_country -> precheck
+```
+
+Если страна одновременно присутствует в `include_country` и `exclude_country`, **exclude имеет приоритет**.
+
+При активном whitelist ноды без подходящего emoji-флага страны удаляются. Определение страны выполняется по emoji-флагу в fragment/name VPN-ссылки.
+
+Через UCI:
+
+```sh
+uci -q delete podkop-sub-sync.main.include_country
+uci add_list podkop-sub-sync.main.include_country='RU'
+uci commit podkop-sub-sync
+/etc/init.d/podkop-sub-sync restart
+```
+
+Через installer:
+
+```sh
+wget -qO- https://raw.githubusercontent.com/Trogvars/podkop-sub-sync-openwrt25/main/install-podkop-sub-sync.sh \
+  | sh -s -- \
+      --url 'https://example.com/sub/xxxxx' \
+      --include RU
+```
+
+`--include` можно указывать несколько раз: `--include RU --include KZ`.
 ### Precheck
 
 ```text
