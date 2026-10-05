@@ -4,6 +4,23 @@
 
 Версии 24.x и 25.x развиваются синхронно по функциональности. Различия между ветками касаются прежде всего пакетного менеджера, формата пакета и особенностей OpenWrt.
 
+## 1.3.1
+
+### Исправлено
+
+- Добавлен отсутствовавший bootstrap `install.sh` для OpenWrt 25.x.
+- Команда вида:
+
+```sh
+wget -qO- https://raw.githubusercontent.com/Trogvars/podkop-sub-sync-openwrt25/main/install.sh | sh
+```
+
+  теперь работает так же, как в ветке OpenWrt 24.x.
+- `install.sh` скачивает текущий `main`, запускает `install-podkop-sub-sync.sh` и передаёт ему все параметры (`--max-nodes`, `--include`, `--exclude`, `--with-xhttp` и т.д.).
+- README переведён на единый bootstrap URL.
+
+---
+
 ## 1.3.0
 
 ### Добавлено
