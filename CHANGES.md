@@ -6,18 +6,28 @@
 
 ## 1.3.1
 
-### Исправлено
+### Исправлено и улучшено
 
-- Добавлен отсутствовавший bootstrap `install.sh` для OpenWrt 25.x.
-- Команда вида:
+- `install.sh` теперь является универсальным bootstrap installer для обеих веток.
+- Bootstrap автоматически читает версию OpenWrt из `/etc/openwrt_release`.
+- Для `24.*` автоматически выбирается:
 
-```sh
-wget -qO- https://raw.githubusercontent.com/Trogvars/podkop-sub-sync-openwrt25/main/install.sh | sh
+```text
+Trogvars/podkop-sub-sync-openwrt24
+install-openwrt24.sh
 ```
 
-  теперь работает так же, как в ветке OpenWrt 24.x.
-- `install.sh` скачивает текущий `main`, запускает `install-podkop-sub-sync.sh` и передаёт ему все параметры (`--max-nodes`, `--include`, `--exclude`, `--with-xhttp` и т.д.).
-- README переведён на единый bootstrap URL.
+- Для `25.*` автоматически выбирается:
+
+```text
+Trogvars/podkop-sub-sync-openwrt25
+install-podkop-sub-sync.sh
+```
+
+- Все аргументы (`--url`, `--interval`, `--max-nodes`, `--include`, `--exclude`, `--with-xhttp`, `--no-start`) передаются выбранному installer-у без изменений.
+- Для неподдерживаемой версии OpenWrt bootstrap завершается с явной ошибкой.
+- В ветке OpenWrt 25.x исправлено отсутствие `install.sh`, из-за которого `wget -qO- .../install.sh | sh` ранее завершался без видимого результата.
+- README обеих веток обновлены под единый сценарий установки.
 
 ---
 
