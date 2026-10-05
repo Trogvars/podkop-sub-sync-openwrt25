@@ -159,6 +159,55 @@ retry_interval
 /usr/lib/podkop/sing_box_config_facade.sh
 ```
 
+## XHTTP / sing-box-extended
+
+XHTTP отключён по умолчанию. Для работы VLESS Reality XHTTP нужны **оба** компонента:
+
+1. **sing-box-extended**
+
+```sh
+wget -O /tmp/sb-ext.sh https://raw.githubusercontent.com/EikeiDev/OpenWRT-sing-box-extended/refs/heads/main/install.sh
+sh /tmp/sb-ext.sh
+```
+
+На OpenWrt 25.x установщик `sing-box-extended` умеет работать через `apk` и предлагает пакетную установку `.apk` либо compressed-вариант.
+
+2. **XHTTP patch для Podkop**
+
+```sh
+wget -O /tmp/patch.sh https://raw.githubusercontent.com/moix89/podkop-xhttp-patch/main/install.sh
+sh /tmp/patch.sh
+```
+
+Патч добавляет обработчик `xhttp)` в `/usr/lib/podkop/sing_box_config_facade.sh` и исправляет совместимость проверки версии Podkop с `sing-box-extended` там, где это требуется.
+
+После обновления Podkop патч может быть перезаписан — в таком случае примените его повторно.
+
+Проверка:
+
+```sh
+sing-box version
+grep -n 'xhttp)' /usr/lib/podkop/sing_box_config_facade.sh
+```
+
+Для автоматической установки/проверки XHTTP-стека используйте:
+
+```text
+--with-xhttp
+```
+
+Пример:
+
+```sh
+wget -qO- https://raw.githubusercontent.com/Trogvars/podkop-sub-sync-openwrt25/main/install-podkop-sub-sync.sh \
+  | sh -s -- \
+      --url 'https://example.com/sub/xxxxx' \
+      --interval 86400 \
+      --exclude RU \
+      --with-xhttp
+```
+
+При `allow_xhttp=1` updater заранее проверяет наличие `sing-box-extended` и XHTTP-парсера Podkop. Если одного из компонентов нет, синхронизация останавливается **до скачивания подписки** с понятной ошибкой.
 ## Установка
 
 ### Через installer
@@ -194,7 +243,7 @@ sh <(wget -O - URL)
 Рекомендуется:
 
 ```sh
-wget -qO- https://github.com/Trogvars/podkop_subsync/raw/refs/heads/main/install-podkop-sub-sync.sh \
+wget -qO- https://raw.githubusercontent.com/Trogvars/podkop-sub-sync-openwrt25/main/install-podkop-sub-sync.sh \
     | sh -s -- \
         --url 'https://example.com/sub/xxxxx' \
         --interval 86400 \
@@ -204,7 +253,7 @@ wget -qO- https://github.com/Trogvars/podkop_subsync/raw/refs/heads/main/install
 Несколько стран:
 
 ```sh
-wget -qO- https://github.com/Trogvars/podkop_subsync/raw/refs/heads/main/install-podkop-sub-sync.sh \
+wget -qO- https://raw.githubusercontent.com/Trogvars/podkop-sub-sync-openwrt25/main/install-podkop-sub-sync.sh \
     | sh -s -- \
         --url 'https://example.com/sub/xxxxx' \
         --interval 86400 \
@@ -316,7 +365,7 @@ option allow_xhttp '0'
 
 `0` — XHTTP-ссылки удаляются.
 
-`1` — разрешаются.
+`1` — разрешаются. При этом обязательны `sing-box-extended` и XHTTP-патч Podkop.
 
 ### Исключение стран
 
