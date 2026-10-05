@@ -23,9 +23,9 @@
 4. Отбрасывает протоколы, которые отключены в настройках.
 5. При необходимости исключает XHTTP-ссылки.
 6. Применяет фильтрацию стран: whitelist через `include_country` и blacklist через `exclude_country`.
-7. Реально проверяет каждую оставшуюся ноду через временный экземпляр sing-box.
-8. Оставляет только рабочие серверы.
-9. Вычисляет SHA256 итогового списка.
+7. Реально проверяет каждую оставшуюся ноду через временный экземпляр sing-box и измеряет время доступа.
+8. Если задан `precheck_max_nodes`, оставляет только X самых быстрых рабочих нод.
+9. Стабилизирует выбранный список и вычисляет его SHA256.
 10. Если рабочий список не изменился — Podkop не перезапускается.
 11. Если список изменился:
     - обновляет `urltest_proxy_links`;
@@ -58,10 +58,16 @@ XHTTP filtering
 Country include/exclude filtering
        |
        v
-Real proxy precheck
+Real proxy precheck + latency
        |
        v
-Only working proxies
+Working proxies
+       |
+       v
+Keep fastest X
+       |
+       v
+Stable selected list
        |
        v
 SHA256 compare
@@ -111,7 +117,8 @@ Success
 - поднимает локальные mixed proxy-порты;
 - направляет каждый локальный порт в конкретный outbound;
 - выполняет HTTP-проверку через этот proxy;
-- оставляет только успешно прошедшие ноды.
+- сохраняет latency успешно прошедших нод;
+- после полного теста выбирает заданное число самых быстрых.
 
 Проверка выполняется реальным трафиком через конкретный VPN-сервер, а не простым TCP-connect к IP/порту.
 
@@ -277,7 +284,7 @@ config sync 'main'
         option interval '86400'
         option retry_interval '900'
 
-        option user_agent 'podkop-sub-sync/1.0'
+        option user_agent 'podkop-sub-sync/1.3'
         option send_hwid '0'
         option allow_xhttp '0'
 
@@ -300,6 +307,7 @@ config sync 'main'
         option precheck_base_port '39000'
         option precheck_min_nodes '3'
         option precheck_min_percent '20'
+        option precheck_max_nodes '20'
 ```
 
 ## Основные параметры
@@ -474,6 +482,66 @@ option precheck_min_percent '20'
 
 Если проходит слишком мало серверов, программа считает, что проблема может быть в Интернете или test URL, и не заменяет текущую рабочую конфигурацию Podkop.
 
+### Ограничение числа рабочих нод: `precheck_max_nodes`
+
+После полного precheck для каждой рабочей ноды известно измеренное время ответа.
+
+```text
+option precheck_max_nodes '20'
+```
+
+означает: проверить все кандидаты и оставить только **20 самых быстрых рабочих нод**.
+
+```text
+option precheck_max_nodes '0'
+```
+
+означает отсутствие лимита.
+
+Алгоритм:
+
+```text
+all candidates
+      ↓
+full availability test
+      ↓
+working nodes + measured latency
+      ↓
+sort by response time
+      ↓
+keep fastest X
+      ↓
+stable URI sort
+      ↓
+Podkop URLTest
+```
+
+`precheck_min_nodes` и `precheck_min_percent` проверяются по **полному числу рабочих нод до обрезки**. То есть лимит не мешает защите от массового ложного отказа.
+
+После выбора Top X итоговые URI сортируются стабильно. Поэтому изменение только порядка latency не вызывает лишний restart Podkop; SHA256 меняется при изменении состава выбранных нод.
+
+Итоговый лог содержит, например:
+
+```text
+Working     : 45
+Selected    : 20
+Fastest     : 187ms
+Cutoff      : 841ms
+```
+
+Через UCI:
+
+```sh
+uci set podkop-sub-sync.main.precheck_max_nodes='20'
+uci commit podkop-sub-sync
+/etc/init.d/podkop-sub-sync restart
+```
+
+Через installer:
+
+```sh
+--max-nodes 20
+```
 ## Проверка вручную
 
 Запустить updater:
@@ -629,9 +697,13 @@ podkop-sub-sync-openwrt24
 25 failed
 ```
 
-Именно эти 41 рабочая нода записываются в Podkop URLTest.
+При `precheck_max_nodes=20` выбираются 20 самых быстрых из этих 41:
 
-Далее Podkop самостоятельно измеряет latency и выбирает лучший сервер по своим настройкам URLTest.
+```text
+20 selected
+```
+
+Только они записываются в Podkop URLTest. Podkop затем продолжает измерять latency и выбирать лучший сервер внутри этого сокращённого набора.
 
 ## Лицензия
 
