@@ -208,7 +208,7 @@ grep -n 'xhttp)' /usr/lib/podkop/sing_box_config_facade.sh
 Пример:
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/Trogvars/podkop-sub-sync-openwrt25/main/install-podkop-sub-sync.sh \
+wget -qO- https://raw.githubusercontent.com/Trogvars/podkop-sub-sync-openwrt25/main/install.sh \
   | sh -s -- \
       --url 'https://example.com/sub/xxxxx' \
       --interval 86400 \
@@ -218,6 +218,24 @@ wget -qO- https://raw.githubusercontent.com/Trogvars/podkop-sub-sync-openwrt25/m
 
 При `allow_xhttp=1` updater заранее проверяет наличие `sing-box-extended` и XHTTP-парсера Podkop. Если одного из компонентов нет, синхронизация останавливается **до скачивания подписки** с понятной ошибкой.
 ## Установка
+
+### Bootstrap `install.sh`
+
+Для установки одной командой используйте короткий bootstrap:
+
+```sh
+wget -qO- https://raw.githubusercontent.com/Trogvars/podkop-sub-sync-openwrt25/main/install.sh | sh
+```
+
+Он скачивает текущий `main`, находит `install-podkop-sub-sync.sh` и передаёт ему все аргументы.
+
+Например:
+
+```sh
+wget -qO- https://raw.githubusercontent.com/Trogvars/podkop-sub-sync-openwrt25/main/install.sh \
+  | sh -s -- \
+      --max-nodes 20
+```
 
 ### Через installer
 
@@ -252,7 +270,7 @@ sh <(wget -O - URL)
 Рекомендуется:
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/Trogvars/podkop-sub-sync-openwrt25/main/install-podkop-sub-sync.sh \
+wget -qO- https://raw.githubusercontent.com/Trogvars/podkop-sub-sync-openwrt25/main/install.sh \
     | sh -s -- \
         --url 'https://example.com/sub/xxxxx' \
         --interval 86400 \
@@ -262,7 +280,7 @@ wget -qO- https://raw.githubusercontent.com/Trogvars/podkop-sub-sync-openwrt25/m
 Несколько стран:
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/Trogvars/podkop-sub-sync-openwrt25/main/install-podkop-sub-sync.sh \
+wget -qO- https://raw.githubusercontent.com/Trogvars/podkop-sub-sync-openwrt25/main/install.sh \
     | sh -s -- \
         --url 'https://example.com/sub/xxxxx' \
         --interval 86400 \
@@ -431,7 +449,7 @@ uci commit podkop-sub-sync
 Через installer:
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/Trogvars/podkop-sub-sync-openwrt25/main/install-podkop-sub-sync.sh \
+wget -qO- https://raw.githubusercontent.com/Trogvars/podkop-sub-sync-openwrt25/main/install.sh \
   | sh -s -- \
       --url 'https://example.com/sub/xxxxx' \
       --include RU
